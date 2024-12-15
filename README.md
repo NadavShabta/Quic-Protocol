@@ -122,8 +122,6 @@ Performance was analyzed for three different thresholds (1, 3, and 5). Results d
 - **Network Simulation**: Developed tools to simulate and analyze unreliable network environments.
 - **Performance Analysis**: Visualized and analyzed data to draw insights on optimal configurations.
 
-## License
-This project is licensed under the MIT License. See the `LICENSE` file for details.
 
 ## Acknowledgments
 - Inspired by RFC 9000 (QUIC: A UDP-Based Multiplexed and Secure Transport) and RFC 9002 (QUIC Loss Detection and Congestion Control).

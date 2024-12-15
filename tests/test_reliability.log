@@ -1,0 +1,9 @@
+Project structure:
+- quic
+	Contains partial implementation of QUIC protocol ("wet" part)
+
+- Python files in root directory
+	Related to testing the protocol implementation and graph generation
+
+- threshold* directories
+	Contain raw test data and generated graphs

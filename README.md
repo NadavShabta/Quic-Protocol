@@ -9,6 +9,7 @@ This project is a custom implementation of the QUIC protocol, designed to ensure
 - **Congestion Control**: Implements mechanisms to manage traffic and avoid network congestion.
 - **Performance Analysis**: Includes scripts for visualizing and analyzing performance under different thresholds (1, 3, and 5).
 - **Network Simulation**: Simulates unreliable network conditions using dedicated client and server implementations.
+- **Custom QUIC Protocol Logic**: Includes the handling of QUIC-specific frames and packet management.
 
 ## Reliability Testing
 To evaluate and enhance the reliability of the protocol, the following mechanisms were implemented:
@@ -50,14 +51,19 @@ The results of the experiments were as follows:
 
 ## Project Structure
 - **src/**: Contains the main source code files.
-  - `plot_data.py`: Visualization and analysis of performance metrics.
-  - `summary.py`: Summarizes results and generates reports.
-  - `test_reliability.py`: Tests the reliability of the protocol.
-  - `unreliable_client.py` & `unreliable_server.py`: Simulate network communication under unreliable conditions.
+  - `client.py`, `server.py`, `unreliable_client.py`, `unreliable_server.py`: Core client and server implementations.
+  - `plot_data.py`, `summary.py`, `test_reliability.py`: Scripts for analysis and reliability testing.
+  - `var_int.py`: Handles variable-length integer encoding for QUIC.
+  - **frames/**: Logic for handling QUIC frames.
+    - `__init__.py`: Frame initialization logic.
+    - `ack.py`: Handles acknowledgment frame operations.
+    - `stream.py`: Manages QUIC stream frames.
+  - **packets/**: (Optional) Directory for packet utilities if applicable.
 
 - **tests/**: Includes test cases and logs.
   - `tests/`: Directory containing unit and integration tests.
   - `test_reliability.log`: Logs generated during reliability tests.
+  - `test_reliability.py`: Reliability testing script.
 
 - **data/**: Experimental results and datasets.
   - `threshold 1 filesize 2`
@@ -125,5 +131,5 @@ Performance was analyzed for three different thresholds (1, 3, and 5). Results d
 
 ## Acknowledgments
 - Inspired by RFC 9000 (QUIC: A UDP-Based Multiplexed and Secure Transport) and RFC 9002 (QUIC Loss Detection and Congestion Control).
-- Special thanks to [your name/team] for contributions and support.
+
 

@@ -20,25 +20,25 @@ from quic.packets.initial import QuicInitialPacket
 from unreliable_client import UnreliableClient
 from unreliable_server import UnreliableServer
 
-# Configure console handler for INFO and higher level messages
+# Configure console handler to print INFO-level logs to stdout
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
 console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
-# Configure file handler for DEBUG and higher level messages
+# Configure file handler to capture DEBUG-level logs in a file
 file_handler = FileHandler("test_reliability.log", "w")
 file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 
-# Create and configure root logger
+# Set up root logger
 logger = logging.getLogger()
-logger.setLevel(logging.INFO)  # Set root logger level to DEBUG
-logger.addHandler(console_handler)  # Add console handler
+logger.setLevel(logging.INFO)
+logger.addHandler(console_handler)
 
 
 def log_exception(exc_type, exc_value, exc_traceback):
     """
-    Exception handler to log unhandled exceptions.
+    Global handler to log uncaught exceptions with full traceback for debugging purposes.
     """
     logging.exception("Unhandled exception occurred", exc_info=(exc_type, exc_value, exc_traceback))
 
@@ -54,6 +54,21 @@ def run_server(
         result_queue: Queue,
         seed=random.randrange(sys.maxsize),
 ):
+    """
+    Initializes and runs an UnreliableServer instance that collects incoming stream frames,
+    reassembles them into file chunks, and verifies integrity using MD5.
+    
+    Parameters:
+        server_host: IP address to bind the server socket
+        server_port: Port to bind the server socket
+        fail_chance: Simulated packet drop probability
+        ack_threshold: Threshold for triggering ACK responses
+        expected_size: Total size of the expected file for hash validation
+        start_event: Threading event to signal readiness
+        stop_event: Threading event to control termination
+        result_queue: Thread-safe queue to report results back to caller
+        seed: Random seed for packet loss simulation reproducibility
+    """
     chunks = {}
 
     with UnreliableServer(server_host, server_port, fail_chance, ack_threshold, seed=seed) as server:
@@ -68,14 +83,15 @@ def run_server(
                     chunks[frame.offset] = frame.data
             except socket.timeout:
                 pass
-                # logging.warning("Server reached timeout")
 
         logging.info("Server stopping")
 
+    # Check if all expected chunks are received
     for offset in range(0, expected_size, 1000):
         if offset not in chunks:
             logging.debug(f"Missing offset {offset}")
 
+    # Compute MD5 hash of received file content for integrity validation
     sorted_keys = sorted(chunks.keys())
     server_md5 = md5()
     for key in sorted_keys:
@@ -98,13 +114,20 @@ def run_test(
         client_seed=random.randrange(sys.maxsize),
         server_seed=random.randrange(sys.maxsize),
 ):
+    """
+    Launches both server and client components to simulate reliable data transfer
+    over an unreliable channel. Collects performance and correctness metrics.
+    
+    Returns:
+        (duration, success flag, client packet count, server packet count)
+    """
     start_event.clear()
     stop_event.clear()
 
     file_size = path.stat().st_size
-
     result_queue = Queue()
 
+    # Launch server in separate thread
     server_thread = Thread(
         name="Server Thread",
         target=run_server,
@@ -124,9 +147,9 @@ def run_test(
 
     logging.info("Waiting for server")
     start_event.wait()
-
     start = default_timer()
 
+    # Client starts sending the file in chunks
     with UnreliableClient(
             server_host,
             server_port,
@@ -138,6 +161,7 @@ def run_test(
         client.ack_detect = ack_detect
         client.time_detect = time_detect
 
+        # Send data frames chunk-by-chunk
         for frame in client.chunkify_file(path):
             packet = QuicInitialPacket(
                 packet_number=client.get_packet_number(),
@@ -146,33 +170,26 @@ def run_test(
                 src_conn_id=0,
                 frames=[frame],
             )
-
-            logging.debug(f"Packet #{packet.packet_number} contains offset {frame.offset}")
             client.send_packet(packet)
 
-            # logging.debug("Number of unACKed packets: %d", len(client.unacked_packets))
-
+            # Try to receive ACKs or continue
             while True:
                 try:
                     client.receive_packet()
                 except socket.timeout:
                     break
 
+        # Final retransmission logic (tail loss recovery)
         rtt = client.smoothed_rtt
-        logging.info(f"{rtt=}")
-        logging.info("Sending lost tail packets")
-
         while any(filter(lambda packet: len(packet.frames) > 0, client.unacked_packets.values())):
             if client.ack_detect:
-                for i in range(client.package_reordering_threshold):
+                for _ in range(client.package_reordering_threshold):
                     probe_packet = QuicInitialPacket(
                         packet_number=client.get_packet_number(),
                         version=1,
                         dst_conn_id=1,
                         src_conn_id=0,
                     )
-
-                    # logging.info("Sending probe packet")
                     client.send_packet(probe_packet)
 
             if client.time_detect:
@@ -183,8 +200,6 @@ def run_test(
                     dst_conn_id=1,
                     src_conn_id=0,
                 )
-
-                # logging.info("Sending probe packet")
                 client.send_packet(probe_packet)
                 client.resend_lost_packets()
 
@@ -192,26 +207,19 @@ def run_test(
                 try:
                     client.receive_packet()
                 except socket.timeout:
-                    # logging.warning("Reached timeout")
                     break
 
         end = default_timer()
-
-        logging.info("Finished sending")
         stop_event.set()
 
+    # Verify file integrity with MD5 hash
     client_hash = md5(path.read_bytes()).hexdigest()
-    logging.info("Client hash: %s", client_hash)
-
     server_hash = result_queue.get()
-    logging.info("Server hash: %s", server_hash)
-
     success = client_hash == server_hash
     if not success:
         logging.error("Hash mismatch!")
 
     server_packet_count = result_queue.get()
-
     return end - start, success, client.packet_count, server_packet_count
 
 
@@ -224,58 +232,31 @@ def main(
         server_seed=random.randrange(sys.maxsize),
         show_graph=False,
 ):
-    if client_seed is None:
-        client_seed = random.randrange(sys.maxsize)
-
-    if server_seed is None:
-        server_seed = random.randrange(sys.maxsize)
-
+    """
+    Executes multiple test scenarios with various fail_chances and configurations.
+    Saves all results in a CSV file.
+    """
     start_event = Event()
 
+    # Three client/server configurations: both, only time, only ACK
     matrix = [
-        {
-            "ack_detect": True,
-            "time_detect": True,
-        },
-        {
-            "ack_detect": False,
-            "time_detect": True,
-        },
-        {
-            "ack_detect": True,
-            "time_detect": False,
-        },
+        {"ack_detect": True, "time_detect": True},
+        {"ack_detect": False, "time_detect": True},
+        {"ack_detect": True, "time_detect": False},
     ]
 
     results = {
-        "ack_time": [],
-        "ack_time_success": [],
-        "ack_time_client_packets": [],
-        "ack_time_server_packets": [],
-        "ack_time_total_packets": [],
-        "ack": [],
-        "ack_success": [],
-        "ack_client_packets": [],
-        "ack_server_packets": [],
-        "ack_total_packets": [],
-        "time": [],
-        "time_success": [],
-        "time_client_packets": [],
-        "time_server_packets": [],
-        "time_total_packets": [],
+        "ack_time": [], "ack_time_success": [], "ack_time_client_packets": [], "ack_time_server_packets": [], "ack_time_total_packets": [],
+        "ack": [], "ack_success": [], "ack_client_packets": [], "ack_server_packets": [], "ack_total_packets": [],
+        "time": [], "time_success": [], "time_client_packets": [], "time_server_packets": [], "time_total_packets": [],
     }
 
     logging.info(f"{client_seed=}")
     logging.info(f"{server_seed=}")
+
+    # Iterate over fail_chance from 0% to 10%
     for fail_chance in (i / 100 for i in range(0, 11)):
-        # for fail_chance in (i / 100 for i in range(1, 2)):
-        # if fail_chance != 0:
-        #     continue
-
         for kwargs in matrix:
-            # if kwargs["time_detect"]:
-            #     continue
-
             test_name = ("ack" if kwargs["ack_detect"] else "") + \
                         ("_" if kwargs["ack_detect"] and kwargs["time_detect"] else "") + \
                         ("time" if kwargs["time_detect"] else "")
@@ -301,17 +282,12 @@ def main(
     filename = output_dir / f"{client_seed}_{server_seed}.csv"
     with filename.open("w", newline="") as f:
         csvwriter = writer(f)
-
         csvwriter.writerow(["Test Name"] + [i / 100 for i in range(0, 11)])
-
         for test_name, times in results.items():
             csvwriter.writerow([test_name] + times)
 
     logging.info(filename)
     logging.info(results)
-
-    # if show_graph:
-    #     plot_data.main([filename.open()], filename.with_suffix(".png"))
 
 
 if __name__ == "__main__":
@@ -326,7 +302,6 @@ if __name__ == "__main__":
     parser.add_argument("--show", action="store_true", default=False, help="Show graph after execution (not implemented)")
 
     args = parser.parse_args()
-
     if args.file_logging:
         logger.addHandler(file_handler)
 

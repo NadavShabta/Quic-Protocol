@@ -13,53 +13,67 @@ from quic.packets.numbered_packet import NumberedPacket
 
 
 class Client:
+    """
+    Client implementation for sending and receiving QUIC packets over UDP.
+    Includes logic for chunking files into stream frames, tracking sent packets,
+    detecting losses, and performing retransmissions using both ACK-based and time-based logic.
+    """
+
     def __init__(
-            self,
-            server_ip,
-            server_port,
-            timeout=0.0001,
-            package_reordering_threshold=15,
-            waiting_time_threshold=40,
-            k_initial_rtt=100000,
+        self,
+        server_ip,
+        server_port,
+        timeout=0.0001,
+        package_reordering_threshold=15,
+        waiting_time_threshold=40,
+        k_initial_rtt=100000,
     ):
         self.server_ip = server_ip
         self.server_port = server_port
 
+        # Socket timeout in seconds
         self.timeout = timeout
 
+        # Enable ACK and time-based loss detection
         self.ack_detect = True
         self.time_detect = True
 
+        # Parameters controlling loss detection sensitivity
         self.package_reordering_threshold = package_reordering_threshold
         self.waiting_time_threshold = waiting_time_threshold
 
+        # Tracking state of ACKs and unacknowledged packets
         self.largest_acked = -1
         self.last_ack_time = datetime.datetime.now()
-        self.unacked_packets = {}
-        self.transmission_times: dict[int, datetime.datetime] = {}
+        self.unacked_packets = {}  # Maps packet number -> packet
+        self.transmission_times: dict[int, datetime.datetime] = {}  # Maps packet number -> timestamp
 
+        # RTT estimation variables
         self.k_initial_rtt = k_initial_rtt
         self.smoothed_rtt = self.k_initial_rtt
         self.rttvar = self.k_initial_rtt / 2
         self.min_rtt = float("inf")
         self.latest_rtt = self.k_initial_rtt
 
+        # Packet/stream ID counters
         self._largest_packet_number = -1
         self._largest_stream_id = -1
 
         self.id = random.randint(0, 10000)
 
     def __enter__(self):
+        """Creates a connected UDP socket when entering a context."""
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.connect((self.server_ip, self.server_port))
         self._sock.settimeout(self.timeout)
-
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        """Closes the socket when leaving a context."""
         self._sock.close()
 
     def send_packet(self, packet: NumberedPacket):
+        """Sends a QUIC packet and tracks it for retransmission if needed."""
         buffer = bytes(packet.to_bytes())
         self._sock.send(buffer)
 
@@ -67,6 +81,10 @@ class Client:
         self.transmission_times[packet.packet_number] = datetime.datetime.now()
 
     def chunkify_file(self, path: Path, chunk_size=1000, stream_id: int = None):
+        """
+        Splits a file into StreamFrames to be sent over QUIC.
+        Yields StreamFrame objects with appropriate offsets and finish flag.
+        """
         if stream_id is None:
             stream_id = self.get_stream_id()
 
@@ -87,6 +105,11 @@ class Client:
                 )
 
     def is_lost(self, packet_number: int) -> bool:
+        """
+        Determines whether a packet is considered lost based on:
+        - ACK gaps (packet number based)
+        - Elapsed time since transmission (time based)
+        """
         k_time_threshold = 9 / 8
         k_granularity = datetime.timedelta(milliseconds=1)
 
@@ -103,11 +126,14 @@ class Client:
         return lost
 
     def resend_lost_packets(self) -> dict[int, NumberedPacket]:
+        """
+        Resends all packets detected as lost and updates internal mappings.
+        Returns a dictionary of resent packets (old packet number -> packet).
+        """
         lost_packets = {}
         for packet_number, packet in self.unacked_packets.items():
             if self.is_lost(packet_number):
                 new_packet_number = self.get_packet_number()
-
                 logging.debug(f"Resending {packet_number} as {new_packet_number}")
                 lost_packets[packet.packet_number] = packet
                 packet.packet_number = new_packet_number
@@ -121,6 +147,10 @@ class Client:
         return lost_packets
 
     def receive_packet(self) -> tuple[QuicPacket, tuple[str, int], dict[int, NumberedPacket]]:
+        """
+        Receives a packet and processes ACK frames for RTT estimation and retransmission tracking.
+        Returns the received packet, address, and resent packet map if applicable.
+        """
         buffer, addr = self._sock.recvfrom(1500)
         packet = QuicPacket.from_bytes(BytesIO(buffer))
 
@@ -129,7 +159,6 @@ class Client:
             for frame in packet.frames:
                 if frame.type == 2:
                     frame: AckFrame
-
                     self.largest_acked = frame.largest_acknowledged
                     self.last_ack_time = datetime.datetime.now()
 
@@ -160,9 +189,11 @@ class Client:
         return packet, addr, resent_lost_packets
 
     def get_packet_number(self):
+        """Returns the next available unique packet number."""
         self._largest_packet_number += 1
         return self._largest_packet_number
 
     def get_stream_id(self):
+        """Returns the next available unique stream ID."""
         self._largest_stream_id += 1
         return self._largest_stream_id
